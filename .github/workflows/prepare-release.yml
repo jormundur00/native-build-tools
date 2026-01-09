@@ -1,0 +1,102 @@
+name: Prepare new release
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * *'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute release info and decide if we should create PR
+        id: compute
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Find latest tag (may be empty)
+          LATEST_TAG="$(git tag --list | sort -V | tail -1 || true)"
+          if [[ -n "${LATEST_TAG}" ]]; then
+            COMMITS="$(git rev-list --count "${LATEST_TAG}..HEAD")"
+          else
+            COMMITS="$(git rev-list --count HEAD)"
+          fi
+
+          echo "commits=${COMMITS}" >> "${GITHUB_OUTPUT}"
+          echo "latest_tag=${LATEST_TAG}" >> "${GITHUB_OUTPUT}"
+
+          if [[ "${COMMITS}" -eq 0 ]]; then
+            echo "No commits since latest tag (${LATEST_TAG:-none}). Skipping."
+            echo "should_release=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if [[ ! -f gradle/libs.versions.toml ]]; then
+            echo "gradle/libs.versions.toml not found. Cannot determine snapshot version." >&2
+            exit 1
+          fi
+
+          SNAPSHOT_VERSION="$(grep -Eo '[0-9]+\.[0-9]+\.[0-9]+-SNAPSHOT' -m1 gradle/libs.versions.toml || true)"
+          if [[ -z "${SNAPSHOT_VERSION}" ]]; then
+            echo "No X.Y.Z-SNAPSHOT version found in gradle/libs.versions.toml" >&2
+            exit 1
+          fi
+
+          RELEASE_VERSION="${SNAPSHOT_VERSION%-SNAPSHOT}"
+
+          echo "snapshot_version=${SNAPSHOT_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "release_version=${RELEASE_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "should_release=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Prepare version changes
+        if: steps.compute.outputs.should_release == 'true'
+        shell: bash
+        env:
+          SNAPSHOT_VERSION: ${{ steps.compute.outputs.snapshot_version }}
+          RELEASE_VERSION: ${{ steps.compute.outputs.release_version }}
+        run: |
+          set -euo pipefail
+
+          # Update libs.versions.toml
+          sed -i "s/${SNAPSHOT_VERSION}/${RELEASE_VERSION}/g" gradle/libs.versions.toml
+
+          # Update all tracked pom.xml and gradle.properties
+          git ls-files | grep -E '(pom\.xml|gradle\.properties)$' | xargs -r sed -i "s/${SNAPSHOT_VERSION}/${RELEASE_VERSION}/g"
+
+          echo "Updated versions from ${SNAPSHOT_VERSION} to ${RELEASE_VERSION}"
+
+      - name: "🚀 PR to prepare release"
+        if: steps.compute.outputs.should_release == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 1. Setup Identity
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 2. Local variables based on step outputs
+          VERSION="${{ steps.compute.outputs.release_version }}"
+          BRANCH_NAME="automation/prepare-release-${VERSION}"
+          
+          # 3. Create branch, commit, and push
+          git checkout -b "$BRANCH_NAME"
+          git add .
+          git commit -m "Prepare new release ${VERSION}"
+          git push origin "$BRANCH_NAME" --force
+          
+          # 4. Create PR
+          gh pr create \
+            --title "[Automation] Prepare release ${VERSION}" \
+            --body "Automated removal of -SNAPSHOT suffix for version ${VERSION}. Latest tag: ${{ steps.compute.outputs.latest_tag || 'none' }}." \
+            --base master \
+            --head "$BRANCH_NAME" || echo "PR already exists, branch updated."
