@@ -1,0 +1,73 @@
+name: Bump to next SNAPSHOT after tag
+
+on:
+  create:
+    tags:
+      - '**'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    if: github.event.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.REPO_PAT }}
+
+      - name: Compute next snapshot version
+        id: compute
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG_NAME="${GITHUB_REF_NAME}"
+
+          if [[ ! "${TAG_NAME}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag '${TAG_NAME}' is not X.Y.Z. Exiting." >&2
+            exit 1
+          fi
+
+          NBT_VERSION=$(grep -Eo 'nativeBuildTools\s*=\s*\"([0-9]+\.[0-9]+\.[0-9]+)\"' -m1 gradle/libs.versions.toml | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' || echo "${TAG_NAME}")
+
+          [[ "${NBT_VERSION}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]
+          NEXT_SNAPSHOT="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3]+1))-SNAPSHOT"
+
+          echo "next_snapshot=${NEXT_SNAPSHOT}" >> "${GITHUB_OUTPUT}"
+          echo "current_version=${NBT_VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Apply replacements and PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PAT }}
+          CURRENT_VERSION: ${{ steps.compute.outputs.current_version }}
+          NEXT_SNAPSHOT: ${{ steps.compute.outputs.next_snapshot }}
+          TAG: ${{ github.event.ref }}
+        run: |
+          set -euo pipefail
+
+          # 1. Setup Identity
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # 2. Apply Changes (Perl slurp mode)
+          perl -0777 -pe 's/\Q'"${CURRENT_VERSION}"'\E/'"${NEXT_SNAPSHOT}"'/g' -i gradle/libs.versions.toml
+          git ls-files | grep -E '(pom\.xml|gradle\.properties)$' | xargs -I {} perl -0777 -pe 's/\Q'"${CURRENT_VERSION}"'\E/'"${NEXT_SNAPSHOT}"'/g' -i {}
+
+          # 3. Commit and Push
+          BRANCH="automation/bump-next-snapshot-${NEXT_SNAPSHOT}"
+          git checkout -b "$BRANCH"
+          git add .
+          git commit -m "chore: bump to ${NEXT_SNAPSHOT} after ${TAG} tag"
+          git push origin "$BRANCH" --force
+
+          # 4. Create PR using GitHub CLI
+          gh pr create \
+            --title "[Automation] Bump to next SNAPSHOT ${NEXT_SNAPSHOT}" \
+            --body "Automated version bump from ${CURRENT_VERSION} to ${NEXT_SNAPSHOT} following the ${TAG} tag." \
+            --base master \
+            --head "$BRANCH"
