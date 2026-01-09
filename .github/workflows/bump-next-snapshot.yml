@@ -1,0 +1,105 @@
+name: Bump to next SNAPSHOT after tag
+
+on:
+  create:
+    tags:
+      - '**'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    if: github.event.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute next snapshot version
+        id: compute
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG_NAME="${GITHUB_REF_NAME}"
+          # Strip leading 'v' if present, but we will not produce/keep 'v' anywhere
+          CLEAN_TAG="${TAG_NAME#v}"
+
+          if [[ ! "${CLEAN_TAG}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag '${TAG_NAME}' is not a semantic version X.Y.Z (optionally prefixed by 'v'). Exiting." >&2
+            exit 1
+          fi
+
+          if [[ ! -f gradle/libs.versions.toml ]]; then
+            echo "gradle/libs.versions.toml not found." >&2
+            exit 1
+          fi
+
+          # Try to extract nativeBuildTools version (no suffix)
+          NBT_VERSION="$(grep -Eo 'nativeBuildTools\s*=\s*\"([0-9]+\.[0-9]+\.[0-9]+)\"' -m1 gradle/libs.versions.toml | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+')" || true
+          if [[ -z "${NBT_VERSION:-}" ]]; then
+            # Fallback to tag version
+            NBT_VERSION="${CLEAN_TAG}"
+          fi
+
+          if [[ ! "${NBT_VERSION}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Could not determine a valid current version (X.Y.Z). Found: '${NBT_VERSION}'" >&2
+            exit 1
+          fi
+
+          MAJOR="${BASH_REMATCH[1]}"
+          MINOR="${BASH_REMATCH[2]}"
+          PATCH="${BASH_REMATCH[3]}"
+          NEXT_SNAPSHOT="${MAJOR}.${MINOR}.$((PATCH+1))-SNAPSHOT"
+
+          echo "current_version=${NBT_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "next_snapshot=${NEXT_SNAPSHOT}" >> "${GITHUB_OUTPUT}"
+          echo "clean_tag=${CLEAN_TAG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Apply replacements to next SNAPSHOT
+        shell: bash
+        env:
+          CURRENT_VERSION: ${{ steps.compute.outputs.current_version }}
+          NEXT_SNAPSHOT: ${{ steps.compute.outputs.next_snapshot }}
+        run: |
+          set -euo pipefail
+
+          # Helper: literal replacement using Perl to avoid regex issues
+          replace_literal() {
+            local file="$1"
+            perl -0777 -pe 's/\Q'"${CURRENT_VERSION}"'\E/'"${NEXT_SNAPSHOT}"'/g' -i "${file}"
+          }
+
+          # Update libs.versions.toml
+          replace_literal "gradle/libs.versions.toml"
+
+          # Update all tracked pom.xml and gradle.properties
+          git ls-files | grep -E '(pom\.xml|gradle\.properties)$' | while read -r f; do
+            replace_literal "${f}"
+          done
+
+          echo "Replaced ${CURRENT_VERSION} -> ${NEXT_SNAPSHOT}"
+
+      - name: Create PR to bump to next SNAPSHOT
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: automation/bump-next-snapshot-${{ steps.compute.outputs.next_snapshot }}
+          title: "[Automation] Bump to next SNAPSHOT ${{ steps.compute.outputs.next_snapshot }}"
+          commit-message: "chore: bump to ${{ steps.compute.outputs.next_snapshot }} after ${{ steps.compute.outputs.clean_tag }} tag"
+          body: |
+            Automated bump to the next development version after the ${{
+              steps.compute.outputs.clean_tag
+            }} tag.
+
+            - Current version detected: ${{ steps.compute.outputs.current_version }}
+            - Next snapshot: ${{ steps.compute.outputs.next_snapshot }}
+
+            This PR updates gradle/libs.versions.toml, all pom.xml and gradle.properties to use the next -SNAPSHOT version.
+          labels: |
+            automation
+            snapshot
