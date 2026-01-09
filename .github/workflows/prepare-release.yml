@@ -1,0 +1,94 @@
+name: Prepare new release
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * *'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute release info and decide if we should create PR
+        id: compute
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Find latest tag (may be empty)
+          LATEST_TAG="$(git tag --list | sort -V | tail -1 || true)"
+          if [[ -n "${LATEST_TAG}" ]]; then
+            COMMITS="$(git rev-list --count "${LATEST_TAG}..HEAD")"
+          else
+            COMMITS="$(git rev-list --count HEAD)"
+          fi
+
+          echo "commits=${COMMITS}" >> "${GITHUB_OUTPUT}"
+          echo "latest_tag=${LATEST_TAG}" >> "${GITHUB_OUTPUT}"
+
+          if [[ "${COMMITS}" -eq 0 ]]; then
+            echo "No commits since latest tag (${LATEST_TAG:-none}). Skipping."
+            echo "should_release=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if [[ ! -f gradle/libs.versions.toml ]]; then
+            echo "gradle/libs.versions.toml not found. Cannot determine snapshot version." >&2
+            exit 1
+          fi
+
+          SNAPSHOT_VERSION="$(grep -Eo '[0-9]+\.[0-9]+\.[0-9]+-SNAPSHOT' -m1 gradle/libs.versions.toml || true)"
+          if [[ -z "${SNAPSHOT_VERSION}" ]]; then
+            echo "No X.Y.Z-SNAPSHOT version found in gradle/libs.versions.toml" >&2
+            exit 1
+          fi
+
+          RELEASE_VERSION="${SNAPSHOT_VERSION%-SNAPSHOT}"
+
+          echo "snapshot_version=${SNAPSHOT_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "release_version=${RELEASE_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "should_release=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Prepare version changes
+        if: steps.compute.outputs.should_release == 'true'
+        shell: bash
+        env:
+          SNAPSHOT_VERSION: ${{ steps.compute.outputs.snapshot_version }}
+          RELEASE_VERSION: ${{ steps.compute.outputs.release_version }}
+        run: |
+          set -euo pipefail
+
+          # Update libs.versions.toml
+          sed -i "s/${SNAPSHOT_VERSION}/${RELEASE_VERSION}/g" gradle/libs.versions.toml
+
+          # Update all tracked pom.xml and gradle.properties
+          git ls-files | grep -E '(pom\.xml|gradle\.properties)$' | xargs -r sed -i "s/${SNAPSHOT_VERSION}/${RELEASE_VERSION}/g"
+
+          echo "Updated versions from ${SNAPSHOT_VERSION} to ${RELEASE_VERSION}"
+
+      - name: Create release PR
+        if: steps.compute.outputs.should_release == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: automation/prepare-release-v${{ steps.compute.outputs.release_version }}
+          title: "[Automation] Prepare new release v${{ steps.compute.outputs.release_version }}"
+          commit-message: "chore(release): prepare v${{ steps.compute.outputs.release_version }} (remove -SNAPSHOT)"
+          body: |
+            Automated release preparation.
+
+            - Latest tag: ${{ steps.compute.outputs.latest_tag || 'none' }}
+            - Commits since latest tag: ${{ steps.compute.outputs.commits }}
+            - Snapshot version replaced: ${{ steps.compute.outputs.snapshot_version }}
+            - Release version: ${{ steps.compute.outputs.release_version }}
+
+            This PR removes the -SNAPSHOT suffix across gradle/libs.versions.toml, all pom.xml and gradle.properties files.
