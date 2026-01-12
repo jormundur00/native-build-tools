@@ -45,6 +45,7 @@ jobs:
           # If grep -c found nothing, it might be empty or exit 1. 
           # We ensure BUMP_COMMITS is a number.
           BUMP_COMMITS=${BUMP_COMMITS:-0}
+          #comment
            
           REAL_WORK=$((TOTAL_COMMITS - BUMP_COMMITS))          
           
