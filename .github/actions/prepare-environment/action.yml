@@ -10,6 +10,10 @@ inputs:
     description: 'Java version to use'
     required: false
     default: '17'
+  graal-java-version:
+    description: 'GraalVM Java version to use for tests (sets GRAALVM_HOME, leaves JAVA_HOME unchanged)'
+    required: false
+    default: '21'
   push-access:
     description: 'Does this workflow require push access?'
     required: false
@@ -22,12 +26,19 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: "🔧 Install GraalVM (JDK${{ inputs.java-version }})"
+    - name: "🔧 Install Gradle JDK (JDK${{ inputs.java-version }})"
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'graalvm'
+        java-version: ${{ inputs.java-version }}
+    - name: "🔧 Install GraalVM for tests (JDK${{ inputs.graal-java-version }})"
+      if: ${{ inputs.graal-java-version != '' }}
       uses: graalvm/setup-graalvm@main
       with:
-        java-version: ${{ inputs.java-version }}
+        java-version: ${{ inputs.graal-java-version }}
         distribution: 'graalvm'
         github-token: ${{ inputs.github-token }}
+        set-java-home: 'false'
     - name: "🔒 Configure push access"
       if: ${{ inputs.push-access == '1' }}
       shell: "bash"
