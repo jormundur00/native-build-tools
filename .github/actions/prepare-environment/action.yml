@@ -29,7 +29,7 @@ runs:
     - name: "🔧 Install Gradle JDK (JDK${{ inputs.java-version }})"
       uses: actions/setup-java@v4
       with:
-        distribution: 'graalvm'
+        distribution: 'temurin'
         java-version: ${{ inputs.java-version }}
     - name: "🔧 Install GraalVM for tests (JDK${{ inputs.graal-java-version }})"
       if: ${{ inputs.graal-java-version != '' }}
