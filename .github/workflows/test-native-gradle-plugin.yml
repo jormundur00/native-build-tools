@@ -122,7 +122,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        java-version: [ 17 ]
+        java-version: [ 17.0.12 ]
         os: [ ubuntu-22.04 ]
     steps:
       - name: "☁️ Checkout repository"
@@ -149,7 +149,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        java-version: [ 17 ]
+        java-version: [ 17.0.12 ]
         os: [ ubuntu-22.04 ]
     steps:
       - name: "☁️ Checkout repository"

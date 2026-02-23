@@ -9,7 +9,7 @@ inputs:
   java-version:
     description: 'Java version to use'
     required: false
-    default: '17'
+    default: '17.0.12'
   graal-java-version:
     description: 'GraalVM Java version to use for tests (sets GRAALVM_HOME, leaves JAVA_HOME unchanged)'
     required: false
@@ -29,7 +29,7 @@ runs:
     - name: "🔧 Install Gradle JDK (JDK${{ inputs.java-version }})"
       uses: actions/setup-java@v4
       with:
-        distribution: 'temurin'
+        distribution: 'graalvm'
         java-version: ${{ inputs.java-version }}
     - name: "🔧 Install GraalVM for tests (JDK${{ inputs.graal-java-version }})"
       if: ${{ inputs.graal-java-version != '' }}
