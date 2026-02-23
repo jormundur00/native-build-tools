@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.regex.Pattern;
 import java.util.regex.Matcher;
 import java.io.IOException;
+import java.util.stream.Stream;
 
 /**
  * Utilities for validating GraalVM reachability metadata repository schemas.
@@ -189,6 +190,21 @@ public final class SchemaValidationUtils {
             Path graalSchema = graalvmHomeLocation.resolve(REACHABILITY_METADATA_SCHEMA_PATH);
             schemaExistsInGraal = Files.isRegularFile(graalSchema);
         } catch (Exception ignored) {
+        }
+
+        // DEBUG PRINT
+        System.out.println("===============================================================");
+        System.out.println("SCHEMA EXISTS IN METADATA REPO: " + schemaExistsInMetadataRepo);
+        System.out.println("SCHEMA EXISTS IN GRAAL: " + schemaExistsInGraal);
+        System.out.println("===============================================================");
+        try (Stream<Path> stream = Files.list(graalvmHomeLocation.resolve("lib/svm/"))) {
+            System.out.println("Contents of " + graalvmHomeLocation.resolve("lib/svm/") + ":");
+            stream.forEach(path -> {
+                String type = Files.isDirectory(path) ? "[DIR] " : "[FILE]";
+                System.out.println("  " + type + " " + path.getFileName());
+            });
+        } catch (IOException e) {
+            System.err.println("Could not read lib/svm directory: " + e.getMessage());
         }
 
         // Apply the four-case logic based solely on schema existence
