@@ -8,16 +8,14 @@ import java.util.List;
 import java.util.regex.Pattern;
 import java.util.regex.Matcher;
 import java.io.IOException;
+import java.util.stream.Stream;
 
 /**
- * Utility methods for validating that required schema files with an exact major version
- * are present in a GraalVM reachability metadata repository.
- * Schema compatibility is determined by the major version only:
- * - If Build Tools requires a higher major than what the repository provides, validation fails
- * and the user must update the reachability metadata repository.
- * - If the repository provides a higher major than supported by Build Tools, validation fails
- * and the user must update Native Build Tools.
- * The check also ensures the schema directory is present and contains a valid set of files.
+ * Utilities for validating GraalVM reachability metadata repository schemas.
+ * - Validates that required repository schemas exist with the exact supported major version
+ *   and enforces a strict, known set of files in the schemas directory.
+ * - Optionally cross-validates the Reachability Metadata Schema between the repository and
+ *   a graal installation when both provide it.
  */
 public final class SchemaValidationUtils {
     /**
@@ -35,6 +33,9 @@ public final class SchemaValidationUtils {
      */
     private record RequiredSchema(String baseName, int requiredMajorVersion) {
     }
+
+    private static final String REACHABILITY_METADATA_SCHEMA = "reachability-metadata-schema";
+    private static final String REACHABILITY_METADATA_SCHEMA_PATH = "lib/svm/schemas/reachability-metadata-schema.json";
 
     private static int safeParseInt(String s) {
         try {
@@ -75,23 +76,27 @@ public final class SchemaValidationUtils {
             throw new IllegalStateException(message);
         }
 
-        int totalFilesFound = 0;
+        int requiredSchemasFound = 0;
         List<String> missing = new ArrayList<>();
         List<String> metadataTooOld = new ArrayList<>();
         List<String> toolsTooOld = new ArrayList<>();
         String prefix = repoRoot.relativize(schemasDir).toString();
 
+        // Count files but explicitly ignore the optional reachability-metadata-schema for "exact count" purposes
         try (DirectoryStream<Path> allFiles = Files.newDirectoryStream(schemasDir)) {
-            for (Path ignored : allFiles) {
-                totalFilesFound++;
+            for (Path f : allFiles) {
+                if (!f.getFileName().toString().startsWith(REACHABILITY_METADATA_SCHEMA)) {
+                    requiredSchemasFound++;
+                }
             }
         } catch (IOException ignored) {}
 
-        if (totalFilesFound > REQUIRED_SCHEMAS.length) {
+        if (requiredSchemasFound > REQUIRED_SCHEMAS.length) {
             String message = "The configured GraalVM reachability metadata repository at "
                     + repoRoot.toAbsolutePath()
                     + " contains more schema files than supported by this version of Native Build Tools. "
-                    + "Found " + totalFilesFound + " files under 'schemas' but exactly " + REQUIRED_SCHEMAS.length + " are supported. "
+                    + "Found " + requiredSchemasFound + " files under 'schemas' (excluding optional reachability-metadata-schema) but exactly "
+                    + REQUIRED_SCHEMAS.length + " are supported. "
                     + "Please update your Native Build Tools to a newer version which supports the newer schemas.";
             throw new IllegalStateException(message);
         }
@@ -147,5 +152,150 @@ public final class SchemaValidationUtils {
                 + ". Please update your Native Build Tools to a newer version.";
             throw new IllegalStateException(message);
         }
+    }
+
+    /**
+     * Optionally cross-validates the reachability-metadata schema between the repository
+     * and the active graal installation.
+     *
+     * Behavior:
+     * - Neither side provides the schema: no-op.
+     * - Repository provides it; graal does not: throws and asks to update graal (majorJDKVersion used for guidance).
+     * - Graal provides it; repository does not: throws and asks to update the repository.
+     * - Both provide it: extract full versions (repo from filename, graal from JSON), compare; throw on mismatch.
+     *
+     * This check does not affect mandatory repository schema validation performed by
+     * {@link #validateSchemas(Path)}. The majorJDKVersion parameter is only used to tailor
+     * guidance in error messages.
+     */
+    public static void validateReachabilityMetadataSchema(Path repoRoot, int majorJDKVersion) {
+        Path schemasDir = repoRoot.resolve("schemas");
+        boolean schemaExistsInMetadataRepo = false;
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(schemasDir, REACHABILITY_METADATA_SCHEMA + "-v*.json")) {
+            for (Path ignored : stream) {
+                schemaExistsInMetadataRepo = true;
+                break;
+            }
+        } catch (IOException ignored) {}
+
+        String env = System.getenv("GRAALVM_HOME");
+        Path graalvmHomeLocation;
+        if (env != null) {
+            graalvmHomeLocation = Path.of(env);
+        } else {
+            graalvmHomeLocation = Path.of(System.getenv("JAVA_HOME"));
+        }
+        boolean schemaExistsInGraal = false;
+        try {
+            Path graalSchema = graalvmHomeLocation.resolve(REACHABILITY_METADATA_SCHEMA_PATH);
+            schemaExistsInGraal = Files.isRegularFile(graalSchema);
+        } catch (Exception ignored) {
+        }
+
+        // DEBUG PRINT
+        System.out.println("===============================================================");
+        System.out.println("SCHEMA EXISTS IN METADATA REPO: " + schemaExistsInMetadataRepo);
+        System.out.println("SCHEMA EXISTS IN GRAAL: " + schemaExistsInGraal);
+        System.out.println("===============================================================");
+        try (Stream<Path> stream = Files.list(graalvmHomeLocation.resolve("lib/svm/"))) {
+            System.out.println("Contents of " + graalvmHomeLocation.resolve("lib/svm/") + ":");
+            stream.forEach(path -> {
+                String type = Files.isDirectory(path) ? "[DIR] " : "[FILE]";
+                System.out.println("  " + type + " " + path.getFileName());
+            });
+        } catch (IOException e) {
+            System.err.println("Could not read lib/svm directory: " + e.getMessage());
+        }
+
+        // Apply the four-case logic based solely on schema existence
+        if (!schemaExistsInMetadataRepo && !schemaExistsInGraal) {
+            // skip validation
+        } else if (schemaExistsInMetadataRepo && !schemaExistsInGraal) {
+            String message = "The configured GraalVM reachability metadata repository at "
+                + repoRoot.toAbsolutePath()
+                + " provides a reachability-metadata schema, but your GraalVM installation at "
+                + graalvmHomeLocation
+                + " does not. Please update your graal installation to a newer version.";
+            if (majorJDKVersion < 21) {
+                message += " Update to the latest graal 21.x or 25.x.";
+            } else {
+                message += " Update to the latest available release in your line.";
+            }
+            throw new IllegalStateException(message);
+        } else if (!schemaExistsInMetadataRepo && schemaExistsInGraal) {
+            String message = "Your graal installation at "
+                + graalvmHomeLocation
+                + " provides a reachability-metadata schema, but the configured reachability metadata repository at "
+                + repoRoot.toAbsolutePath()
+                + " does not. Please update your reachability metadata repository to a newer version.";
+            throw new IllegalStateException(message);
+        } else if (schemaExistsInMetadataRepo && schemaExistsInGraal){
+            String repoVersion = findMetadataRepoReachabilityMetadataSchemaVersion(schemasDir);
+            String graalVersion = findGraalReachabilityMetadataSchemaVersion(graalvmHomeLocation);
+            if (repoVersion != null && graalVersion != null) {
+                int cmp = compareVersions(repoVersion, graalVersion);
+                if (cmp != 0) {
+                    String message = "Detected reachability-metadata schema version mismatch. Repository v"
+                            + repoVersion
+                            + " vs graal v"
+                            + graalVersion
+                            + ". ";
+                    if (cmp < 0) {
+                        message += "Please update the reachability metadata repository.";
+                    } else {
+                        message += "Please update your GraalVM installation.";
+                    }
+                    throw new IllegalStateException(message);
+                }
+            }
+        }
+    }
+
+    private static String findMetadataRepoReachabilityMetadataSchemaVersion(Path schemasDir) {
+        Pattern reachabilityPattern = Pattern.compile(Pattern.quote(REACHABILITY_METADATA_SCHEMA) + "-v(\\d+)\\.(\\d+)\\.(\\d+)\\.json");
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(schemasDir, REACHABILITY_METADATA_SCHEMA + "-v*.json")) {
+            for (Path entry : stream) {
+                String name = entry.getFileName().toString();
+                Matcher m = reachabilityPattern.matcher(name);
+                if (m.matches()) {
+                    return m.group(1) + "." + m.group(2) + "." + m.group(3);
+                }
+            }
+        } catch (IOException ignored) {}
+        return null;
+    }
+
+    private static String findGraalReachabilityMetadataSchemaVersion(Path graalHome) {
+        try {
+            Path graalSchema = graalHome.resolve(REACHABILITY_METADATA_SCHEMA_PATH);
+            if (Files.isRegularFile(graalSchema)) {
+                String content = Files.readString(graalSchema);
+                Matcher vm = Pattern.compile("\"version\"\\s*:\\s*\"(\\d+)\\.(\\d+)\\.(\\d+)\"").matcher(content);
+                if (vm.find()) {
+                    return vm.group(1) + "." + vm.group(2) + "." + vm.group(3);
+                }
+            }
+        } catch (IOException ignored) {}
+        return null;
+    }
+
+    private static int compareVersions(String repoVersion, String graalVersion) {
+        String[] ra = repoVersion.split("\\.");
+        String[] ga = graalVersion.split("\\.");
+        int rMaj = ra.length > 0 ? safeParseInt(ra[0]) : 0;
+        int rMin = ra.length > 1 ? safeParseInt(ra[1]) : 0;
+        int rPat = ra.length > 2 ? safeParseInt(ra[2]) : 0;
+        int gMaj = ga.length > 0 ? safeParseInt(ga[0]) : 0;
+        int gMin = ga.length > 1 ? safeParseInt(ga[1]) : 0;
+        int gPat = ga.length > 2 ? safeParseInt(ga[2]) : 0;
+
+        int cmp = Integer.compare(rMaj, gMaj);
+        if (cmp == 0) {
+            cmp = Integer.compare(rMin, gMin);
+        }
+        if (cmp == 0) {
+            cmp = Integer.compare(rPat, gPat);
+        }
+        return cmp;
     }
 }
