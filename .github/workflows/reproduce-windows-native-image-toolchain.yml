@@ -9,9 +9,17 @@ permissions:
 
 jobs:
   reproduce:
-    name: "Reproduce Native Image discovery on windows-latest"
-    runs-on: windows-latest
+    name: "Native Image discovery on ${{ matrix.os }}"
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            clean_shell_outcome: success
+          - os: windows-latest
+            clean_shell_outcome: failure
     steps:
       - name: "☁️ Checkout repository"
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -38,7 +46,7 @@ jobs:
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
           & $vswhere -version 17.6 -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           & $vswhere -version 17.6 -products * -property installationPath
-      - name: "❌ Reproduce from an uninitialized shell"
+      - name: "🧪 Build from an uninitialized shell"
         id: clean-shell
         continue-on-error: true
         shell: pwsh
@@ -53,8 +61,13 @@ jobs:
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
           $install = & $vswhere -latest -products * -property installationPath
           $vsDevCmd = Join-Path $install 'Common7\Tools\VsDevCmd.bat'
-          cmd.exe /d /s /c "call `"$vsDevCmd`" -arch=x64 -host_arch=x64 && native-image -cp . Hello && Hello.exe"
-      - name: "❌ Fail if the clean-shell build unexpectedly succeeds"
-        if: steps.clean-shell.outcome != 'failure'
+          cmd.exe /d /s /c "call `"$vsDevCmd`" -arch=x64 -host_arch=x64 && native-image -cp . -o hello-initialized Hello && hello-initialized.exe"
+      - name: "✅ Verify expected clean-shell result"
         shell: pwsh
-        run: exit 1
+        env:
+          EXPECTED_OUTCOME: ${{ matrix.clean_shell_outcome }}
+          ACTUAL_OUTCOME: ${{ steps.clean-shell.outcome }}
+        run: |
+          if ($env:ACTUAL_OUTCOME -ne $env:EXPECTED_OUTCOME) {
+            throw "Expected clean-shell build outcome '$env:EXPECTED_OUTCOME', got '$env:ACTUAL_OUTCOME'."
+          }
