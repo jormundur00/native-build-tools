@@ -112,3 +112,13 @@ the module-specific build report directories.
 a separate GraalVM used by functional and native tests, and optionally configures push access for
 documentation or snapshot deployment workflows. PR test workflows should use this action instead
 of duplicating Java and GraalVM setup.
+
+## 7. Manual diagnosis workflows
+
+### 7.1 Windows Native Image toolchain reproducer
+
+`reproduce-windows-native-image-toolchain.yml` runs only when manually dispatched. It must build a
+minimal Java application with Native Image on `windows-latest` first from an uninitialized shell,
+then from a Visual Studio C++ developer environment. The workflow records Visual Studio discovery
+data and succeeds only when it reproduces the uninitialized-shell failure while the initialized
+build succeeds.
