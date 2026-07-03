@@ -1,0 +1,60 @@
+# Manual Windows Native Image toolchain reproducer. §AR-repository-ci.7.1
+name: "Reproduce Windows Native Image toolchain discovery"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce:
+    name: "Reproduce Native Image discovery on windows-latest"
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: "☁️ Checkout repository"
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: "🔧 Install GraalVM"
+        uses: graalvm/setup-graalvm@60c26726de13f8b90771df4bc1641a52a3159994 # v1
+        with:
+          java-version: '21.0.11'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: "🧪 Compile minimal application"
+        shell: pwsh
+        run: |
+          @'
+          public class Hello {
+              public static void main(String[] args) {
+                  System.out.println("hello");
+              }
+          }
+          '@ | Set-Content Hello.java
+          javac Hello.java
+      - name: "🔎 Show Visual Studio discovery data"
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          & $vswhere -version 17.6 -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          & $vswhere -version 17.6 -products * -property installationPath
+      - name: "❌ Reproduce from an uninitialized shell"
+        id: clean-shell
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+            throw 'Expected cl.exe to be absent before Visual Studio environment initialization.'
+          }
+          native-image -cp . Hello
+      - name: "✅ Prove explicit Visual Studio initialization works"
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $install = & $vswhere -latest -products * -property installationPath
+          $vsDevCmd = Join-Path $install 'Common7\Tools\VsDevCmd.bat'
+          cmd.exe /d /s /c "call `"$vsDevCmd`" -arch=x64 -host_arch=x64 && native-image -cp . Hello && Hello.exe"
+      - name: "✅ Verify that the clean-shell build failed"
+        if: steps.clean-shell.outcome != 'failure'
+        shell: pwsh
+        run: exit 1
