@@ -118,7 +118,7 @@ of duplicating Java and GraalVM setup.
 ### 7.1 Windows Native Image toolchain reproducer
 
 `reproduce-windows-native-image-toolchain.yml` runs only when manually dispatched. It must build a
-minimal Java application with Native Image from an uninitialized shell and then from a Visual
-Studio C++ developer environment on both `windows-2022` and `windows-latest`. The workflow records
-Visual Studio discovery data and succeeds only when the clean-shell build passes on `windows-2022`,
-fails on `windows-latest`, and the initialized build succeeds on both runners.
+minimal Java application with GraalVM `21.0.11` and `25` from an uninitialized shell and then from
+a Visual Studio C++ developer environment on both `windows-2022` and `windows-latest`. The workflow
+records Visual Studio discovery data and succeeds only when the clean-shell build passes on
+`windows-2022`, fails on `windows-latest`, and the initialized build succeeds on both runners.
