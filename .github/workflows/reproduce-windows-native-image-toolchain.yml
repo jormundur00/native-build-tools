@@ -54,7 +54,7 @@ jobs:
           $install = & $vswhere -latest -products * -property installationPath
           $vsDevCmd = Join-Path $install 'Common7\Tools\VsDevCmd.bat'
           cmd.exe /d /s /c "call `"$vsDevCmd`" -arch=x64 -host_arch=x64 && native-image -cp . Hello && Hello.exe"
-      - name: "✅ Verify that the clean-shell build failed"
+      - name: "❌ Fail if the clean-shell build unexpectedly succeeds"
         if: steps.clean-shell.outcome != 'failure'
         shell: pwsh
         run: exit 1
